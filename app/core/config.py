@@ -1,5 +1,7 @@
-from pydantic_settings import BaseSettings
+from pathlib import Path
 from typing import List
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -50,6 +52,14 @@ class Settings(BaseSettings):
             return [int(v) for v in self.MEDIA_VARIANTS.split(",") if v.strip()]
         except ValueError:
             return [160, 320, 640, 1280]
+
+    @property
+    def media_dir(self) -> Path:
+        return Path(self.MEDIA_ROOT).resolve()
+
+    @property
+    def media_url(self) -> str:
+        return "/" + self.MEDIA_URL_PREFIX.strip("/")
 
     class Config:
         env_file = ".env"

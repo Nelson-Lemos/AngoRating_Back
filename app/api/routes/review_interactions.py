@@ -4,7 +4,7 @@ from sqlalchemy import func
 
 from app.core.database import get_db
 from app.core.security import get_current_active_user, get_optional_user
-from app.models.review_vote import ReviewVote, ReviewComment
+from app.models.social import ReviewVote, ReviewComment
 from app.models.review import Review
 from app.models.notification import Notification
 

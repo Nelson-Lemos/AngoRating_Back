@@ -42,9 +42,34 @@ class User(Base, UUIDMixin, TimestampMixin):
     rejected_contributions = Column(Integer, default=0, nullable=False)
     last_review_at = Column(DateTime(timezone=True), nullable=True)
 
-    reviews = relationship("Review", back_populates="user")
-    reports = relationship("Report", back_populates="user")
-    media = relationship("Media", back_populates="uploader")
+    # `Review` tem duas FKs para `users` (autor e moderador), por isso o
+    # caminho tem de ser explícito nos dois sentidos.
+    reviews = relationship(
+        "Review", back_populates="user", foreign_keys="Review.user_id"
+    )
+    reports = relationship(
+        "Report", back_populates="user", foreign_keys="Report.user_id"
+    )
+    media = relationship("Media", back_populates="uploader", foreign_keys="Media.user_id")
+    contributions = relationship(
+        "Contribution",
+        back_populates="user",
+        foreign_keys="Contribution.user_id",
+    )
+    verification_requests = relationship(
+        "VerificationRequest",
+        back_populates="requester",
+        foreign_keys="VerificationRequest.requested_by",
+    )
+    trust_snapshots = relationship(
+        "ReviewerTrustSnapshot",
+        back_populates="user",
+        foreign_keys="ReviewerTrustSnapshot.user_id",
+    )
+    favorites = relationship("Favorite", back_populates="user")
+    following = relationship(
+        "Follow", back_populates="user", foreign_keys="Follow.user_id"
+    )
 
     @property
     def is_staff(self) -> bool:

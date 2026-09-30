@@ -1,233 +1,229 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import desc, func
+"""Feed de activity.
+
+O ficheiro anterior tinha três funções de gamificação — `get_active_battle`,
+`get_active_wave` e `get_leaderboard` — que fabricavam os seus próprios
+números:
+
+* batalha: `votes_a = total_reviews * 37` — os votos eram o número de
+  avaliações multiplicado por uma constante;
+* wave: `random.randint(20, 90)` por entidade, e a percentagem derivada disso;
+* leaderboard: `total_xp = total_reviews * 10` e níveis "Top Reviewer".
+
+Nada disto reflectia nada que tivesse acontecido. As três foram removidas e
+`/api/v1/feed/challenges` deixou de existir.
+
+O que fica é o que é útil e verificável: avaliações recentes reais, entidades
+que precisam de mais vozes, e o progresso privado de quem avalia.
+"""
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
-import random
+from typing import Optional
 
-from app.models.review import Review
+from sqlalchemy import desc, func
+from sqlalchemy.orm import Session
+
 from app.models.company import Company
-from app.models.score import CompanyScore
+from app.models.review import Review
 from app.models.user import User
-from app.models.ranking import ScoreHistory
+from app.services import trust_service
 
 
-def get_feed(db: Session, limit: int = 20) -> dict:
-    recent_reviews = (
+def get_feed(
+    db: Session,
+    limit: int = 20,
+    category_id: Optional[str] = None,
+    location_id: Optional[str] = None,
+) -> dict:
+    """Actividade recente. Só entra `PUBLISHED` e `is_valid`."""
+    query = (
         db.query(Review)
-        .filter(Review.is_valid == True)
-        .order_by(Review.created_at.desc())
+        .join(Company, Company.id == Review.company_id)
+        .filter(
+            Review.is_valid == True,
+            Review.status == "PUBLISHED",
+            Company.is_active == True,
+        )
+    )
+    if category_id:
+        query = query.filter(Company.category_id == category_id)
+    if location_id:
+        query = query.filter(Company.location_id == location_id)
+
+    reviews = query.order_by(Review.created_at.desc()).limit(limit).all()
+
+    return {
+        "recent_reviews": [_review_payload(db, r) for r in reviews],
+        "needs_reviews": needs_reviews(db, limit=6),
+    }
+
+
+def _review_payload(db: Session, r: Review) -> dict:
+    company = r.company
+    user = r.user
+    return {
+        "id": r.id,
+        "rating": r.effective_rating(),
+        "comment": r.comment,
+        "criteria": r.criteria_dict(),
+        "created_at": r.created_at,
+        "user": (
+            {
+                "id": user.id,
+                "name": user.name,
+                "username": user.username,
+                "reputation": user.reviewer_trust,
+                "level": trust_service._level(user.reviewer_trust),
+            }
+            if user
+            else None
+        ),
+        "company": (
+            {
+                "id": company.id,
+                "name": company.name,
+                "slug": company.slug,
+                "kind": company.kind,
+                "verification_status": company.verification_status,
+            }
+            if company
+            else None
+        ),
+        "photo_count": r.photo_count,
+        "comment_count": r.comment_count,
+    }
+
+
+def needs_reviews(db: Session, limit: int = 6) -> list[dict]:
+    """Entidades com poucas avaliações — convém ao utilizador avaliá-las.
+
+    Não é gamificação: é a lista do que ainda não tem voz na comunidade.
+    """
+    rows = (
+        db.query(Company)
+        .filter(
+            Company.is_active == True,
+            Company.status == "PUBLISHED",
+        )
+        .order_by(Company.review_count.asc(), Company.created_at.desc())
         .limit(limit)
         .all()
     )
-    reviews_payload = [
+    return [
         {
-            "id": r.id,
-            "user_name": r.user.name if r.user else "Anónimo",
-            "company_id": r.company_id,
-            "company_name": r.company.name if r.company else "Empresa",
-            "quality": r.quality,
-            "service": r.service,
-            "price": r.price,
-            "reliability": r.reliability,
-            "experience": r.experience,
-            "created_at": r.created_at,
+            "id": c.id,
+            "name": c.name,
+            "slug": c.slug,
+            "review_count": c.review_count,
+            "category_name": c.category.name if c.category else None,
+            "location_name": c.location.name if c.location else None,
         }
-        for r in recent_reviews
+        for c in rows
+        if c.review_count < 5
     ]
 
-    battle = get_active_battle(db)
-    wave = get_active_wave(db)
 
-    return {
-        "recent_reviews": reviews_payload,
-        "battle": battle,
-        "wave": wave,
-    }
+def get_contributors(db: Session, limit: int = 10) -> list[dict]:
+    """Quem mais contribuiu, a sério.
 
-
-def get_active_battle(db: Session):
-    from app.services.ranking_service import get_top_ranking
-
+    Ordena por avaliações publicadas, mostra a taxa de aprovação e o nível de
+    reputação. Sem XP e sem níveis inventados — a diferença é visível.
+    """
     rows = (
-        db.query(Company, CompanyScore)
-        .join(CompanyScore, CompanyScore.company_id == Company.id)
-        .filter(Company.is_active == True, CompanyScore.total_reviews > 0)
-        .order_by(desc(CompanyScore.score))
-        .limit(4)
-        .all()
-    )
-    if len(rows) < 2:
-        return None
-
-    pair = random.sample(rows, 2)
-    (ca, sa), (cb, sb) = pair
-
-    one = max(sa.total_reviews, 1)
-    two = max(sb.total_reviews, 1)
-    votes_a = one
-    votes_b = two
-
-    return {
-        "id": f"battle-{ca.id[:6]}-{cb.id[:6]}",
-        "title": "Quem tem melhor reputação?",
-        "company_a_id": ca.id,
-        "company_a_name": ca.name,
-        "company_a_score": sa.score,
-        "company_b_id": cb.id,
-        "company_b_name": cb.name,
-        "company_b_score": sb.score,
-        "votes_a": votes_a * 37,
-        "votes_b": votes_b * 29,
-        "total_votes": (votes_a * 37) + (votes_b * 29),
-        "expires_at": (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%d"),
-    }
-
-
-def get_active_wave(db: Session):
-    peers = (
-        db.query(Company, CompanyScore)
-        .join(CompanyScore, CompanyScore.company_id == Company.id)
-        .filter(Company.is_active == True, CompanyScore.total_reviews > 0)
-        .order_by(desc(CompanyScore.score))
-        .limit(5)
-        .all()
-    )
-    if not peers:
-        return None
-
-    top_company = peers[0]
-    category = top_company[0].category
-
-    same_category = [p for p in peers if p[0].category_id == top_company[0].category_id]
-    if len(same_category) < 2:
-        same_category = peers[:3]
-
-    total_votes = 0
-    company_votes = []
-    for c, s in same_category[:3]:
-        v = max(s.total_reviews, 1) * random.randint(20, 90)
-        company_votes.append({
-            "company_id": c.id,
-            "company_name": c.name,
-            "votes": v,
-        })
-        total_votes += v
-
-    for item in company_votes:
-        item["percentage"] = round((item["votes"] / total_votes) * 100, 1)
-
-    category_name = category.name if category else ""
-    return {
-        "id": f"wave-{top_company[0].category_id[:6]}",
-        "title": f"Qual é a melhor empresa de {category_name} em Angola?" if category_name else "Qual é a melhor empresa de Angola?",
-        "description": "Vote na empresa que merece o título desta semana.",
-        "company_votes": company_votes,
-        "total_votes": total_votes,
-        "ends_at": (datetime.now(timezone.utc) + timedelta(days=5)).strftime("%Y-%m-%d"),
-    }
-
-
-def get_leaderboard(db: Session, limit: int = 10) -> list:
-    rows = (
-        db.query(
-            User.id.label("user_id"),
-            User.name.label("user_name"),
-            func.count(Review.id).label("total_reviews"),
-        )
+        db.query(User)
         .join(Review, Review.user_id == User.id)
-        .filter(Review.is_valid == True)
-        .group_by(User.id, User.name)
+        .filter(
+            Review.is_valid == True,
+            Review.status == "PUBLISHED",
+            User.is_active == True,
+        )
+        .group_by(User.id)
         .order_by(desc(func.count(Review.id)))
         .limit(limit)
         .all()
     )
+
     items = []
-    for i, row in enumerate(rows, start=1):
-        total_xp = row.total_reviews * 10
-        items.append({
-            "user_id": row.user_id,
-            "user_name": row.user_name,
-            "total_xp": total_xp,
-            "level": _level_for_xp(total_xp),
-            "total_reviews": row.total_reviews,
-            "rank": i,
-        })
+    for i, user in enumerate(rows, start=1):
+        data = trust_service.trust(db, user)
+        items.append(
+            {
+                "rank": i,
+                "user_id": user.id,
+                "name": user.name,
+                "username": user.username,
+                "total_reviews": data["total_reviews"],
+                "approved_contributions": data["approved_contributions"],
+                "approval_rate": data["approval_rate"],
+                "reputation": data["score"],
+                "level": data["level"],
+            }
+        )
     return items
 
 
-def _level_for_xp(xp: int) -> str:
-    if xp >= 5000:
-        return "Top Reviewer"
-    if xp >= 2000:
-        return "Especialista"
-    if xp >= 500:
-        return "Crítico"
-    if xp >= 100:
-        return "Avaliador"
-    return "Novato"
+def get_my_progress(db: Session, user_id: str) -> dict:
+    """Progresso privado de quem avalia. Sem comparação com os outros.
 
+    Antes isto era `get_challenges()`: "Avalie 3 empresas esta semana, +50 XP".
+    A pressão de gamificação sobre um utilizador a avaliar um banco pela
+    primeira vez é o contrário do que queremos. O que fica é uma lista do que
+    já contribuiu e do estado das avaliações em curso.
+    """
+    from app.models.media import Media
+    from app.models.moderation import Contribution
 
-def get_challenges(db: Session, user_id: str) -> list:
-    today = datetime.now(timezone.utc)
-    week_start = today - timedelta(days=today.weekday())
-    week_end = week_start + timedelta(days=6)
-    week_iso = today.strftime("%Y-W%W")
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        return {}
 
-    since_monday = (
-        db.query(func.count(Review.id))
-        .filter(
-            Review.user_id == user_id,
-            Review.is_valid == True,
-            Review.created_at >= week_start,
-            Review.created_at <= week_end,
-        )
+    reviews = (
+        db.query(Review)
+        .filter(Review.user_id == user_id)
+        .order_by(Review.created_at.desc())
+        .all()
+    )
+    published = [r for r in reviews if r.is_valid and r.status == "PUBLISHED"]
+    pending = [r for r in reviews if r.status == "PENDING"]
+
+    contributions = (
+        db.query(Contribution).filter(Contribution.user_id == user_id).all()
+    )
+    photos = (
+        db.query(func.count(Media.id))
+        .filter(Media.user_id == user_id, Media.status == "APPROVED")
         .scalar()
     ) or 0
 
-    total_reviews = (
-        db.query(func.count(Review.id))
-        .filter(Review.user_id == user_id, Review.is_valid == True)
-        .scalar()
-    ) or 0
+    data = trust_service.trust(db, user)
 
-    challenges = [
-        {
-            "id": f"ch-1-{week_iso}",
-            "type": "rate_this_week",
-            "description": "Avalie 3 empresas esta semana",
-            "target": 3,
-            "current": min(since_monday, 3),
-            "xp_reward": 50,
-            "completed": since_monday >= 3,
-            "week_iso": week_iso,
+    return {
+        "reviews": {
+            "total": len(reviews),
+            "published": len(published),
+            "pending": len(pending),
+            "rejected": data["rejected_reviews"],
+            "edited": sum(1 for r in reviews if r.edited_count),
         },
-        {
-            "id": f"ch-2-{week_iso}",
-            "type": "reach_milestone",
-            "description": "Avalie 5 empresas no total",
-            "target": 5,
-            "current": min(total_reviews, 5),
-            "xp_reward": 40,
-            "completed": total_reviews >= 5,
-            "week_iso": week_iso,
+        "contributions": {
+            "total": len(contributions),
+            "approved": data["approved_contributions"],
+            "rejected": data["rejected_contributions"],
         },
-        {
-            "id": f"ch-3-{week_iso}",
-            "type": "explore_sectors",
-            "description": "Avalie empresas de pelo menos 2 sectores",
-            "target": 2,
-            "current": _distinct_categories(db, user_id),
-            "xp_reward": 35,
-            "completed": _distinct_categories(db, user_id) >= 2,
-            "week_iso": week_iso,
+        "photos_approved": photos,
+        "reputation": {
+            "score": data["score"],
+            "level": data["level"],
+            "open_signals": data["open_signals"],
         },
-    ]
-    return challenges
+        "last_30_days": _reviews_last_30_days(db, user_id),
+    }
 
 
-def _distinct_categories(db: Session, user_id: str) -> int:
+def _reviews_last_30_days(db: Session, user_id: str) -> int:
+    since = datetime.now(timezone.utc) - timedelta(days=30)
     return (
-        db.query(func.count(func.distinct(Company.category_id)))
-        .join(Review, Review.company_id == Company.id)
-        .filter(Review.user_id == user_id, Review.is_valid == True)
+        db.query(func.count(Review.id))
+        .filter(Review.user_id == user_id, Review.created_at >= since)
         .scalar()
     ) or 0

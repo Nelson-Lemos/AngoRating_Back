@@ -142,7 +142,7 @@ def get_company_reviews(
 ):
     total, items = review_service.get_company_reviews(db, company_id, skip, limit)
 
-    from app.models.review_vote import ReviewVote, ReviewComment
+    from app.models.social import ReviewVote, ReviewComment
 
     review_ids = [r.id for r in items]
     vote_counts = {}

@@ -1,19 +1,20 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.database import engine, Base
 import app.models
 from app.api.routes import (
     auth, companies, reviews, scores, rankings, categories, reports, admin, feed,
-    review_interactions, notifications, battles,
+    review_interactions, notifications,
 )
 
 app = FastAPI(
     title="AngoRating API",
-    version="1.0.0",
-    description="Plataforma de Rating e Reputação Angolana",
+    version="2.0.0",
+    description="Plataforma angolana de reputação e descoberta de empresas",
 )
 
 app.add_middleware(
@@ -29,13 +30,21 @@ app.include_router(companies.router)
 app.include_router(reviews.router)
 app.include_router(review_interactions.router)
 app.include_router(notifications.router)
-app.include_router(battles.router)
 app.include_router(scores.router)
 app.include_router(rankings.router)
 app.include_router(categories.router)
 app.include_router(reports.router)
 app.include_router(admin.router)
 app.include_router(feed.router)
+
+# Imagens enviadas pela comunidade. `media_service` nunca escreve ficheiros com
+# o nome do utilizador; o path é derivado do checksum.
+settings.media_dir.mkdir(parents=True, exist_ok=True)
+app.mount(
+    settings.media_url,
+    StaticFiles(directory=str(settings.media_dir)),
+    name="media",
+)
 
 
 @app.exception_handler(Exception)

@@ -3,8 +3,11 @@ uvicorn[standard]==0.30.0
 sqlalchemy==2.0.35
 alembic==1.13.2
 psycopg2-binary==2.9.9
-python-jose[cryptography]==3.3.0
+# JWT: PyJWT substitui python-jose. `app.core.security` importa `jwt`.
+PyJWT[crypto]==2.9.0
 passlib[bcrypt]==1.7.4
+# Upload e validação de imagens (`app.services.media_service`).
+Pillow==11.0.0
 python-multipart==0.0.9
 pydantic[email]==2.9.2
 pydantic-settings==2.5.2
